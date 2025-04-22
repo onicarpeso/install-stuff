@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Script to check and install Git, Docker, Tailscale, and Cloudflared
+# Enable SSH password authentication
 # Then clone the specified repository
 # For Ubuntu 24.04
 
@@ -126,6 +127,73 @@ install_cloudflared() {
     fi
 }
 
+# Enable SSH password authentication
+enable_ssh_password_auth() {
+    log "Enabling SSH password authentication..."
+    
+    # Check if SSH server is installed
+    if ! command_exists sshd; then
+        log "SSH server not found. Installing OpenSSH server..."
+        sudo apt update
+        sudo apt install -y openssh-server
+    fi
+    
+    # Create a backup of the original configuration
+    TIMESTAMP=$(date +"%Y%m%d%H%M%S")
+    
+    # Check for configuration in the main sshd_config file
+    if grep -q "^PasswordAuthentication no" /etc/ssh/sshd_config; then
+        sudo cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.backup.$TIMESTAMP"
+        sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+        log "Updated PasswordAuthentication setting in /etc/ssh/sshd_config"
+    fi
+    
+    # Check for configuration in the sshd_config.d directory
+    if [ -d /etc/ssh/sshd_config.d ]; then
+        # Find all files containing PasswordAuthentication directive
+        CONFIG_FILES=$(grep -l "^PasswordAuthentication no" /etc/ssh/sshd_config.d/*.conf 2>/dev/null || true)
+        
+        if [ -n "$CONFIG_FILES" ]; then
+            for file in $CONFIG_FILES; do
+                sudo cp "$file" "$file.backup.$TIMESTAMP"
+                sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' "$file"
+                log "Updated PasswordAuthentication setting in $file"
+            done
+        else
+            # If no existing configuration found, create a new one
+            log "No existing PasswordAuthentication setting found in config.d directory, creating new one..."
+            echo "PasswordAuthentication yes" | sudo tee /etc/ssh/sshd_config.d/99-enable-password-auth.conf > /dev/null
+        fi
+    else
+        # If the directory doesn't exist, update the main config file
+        if ! grep -q "^PasswordAuthentication" /etc/ssh/sshd_config; then
+            sudo cp /etc/ssh/sshd_config "/etc/ssh/sshd_config.backup.$TIMESTAMP"
+            echo "PasswordAuthentication yes" | sudo tee -a /etc/ssh/sshd_config > /dev/null
+            log "Added PasswordAuthentication setting to /etc/ssh/sshd_config"
+        fi
+    fi
+    
+    # Also ensure KbdInteractiveAuthentication is enabled (needed for Ubuntu 22.04+)
+    if grep -q "^KbdInteractiveAuthentication no" /etc/ssh/sshd_config; then
+        sudo sed -i 's/^KbdInteractiveAuthentication no/KbdInteractiveAuthentication yes/' /etc/ssh/sshd_config
+        log "Updated KbdInteractiveAuthentication setting in /etc/ssh/sshd_config"
+    elif ! grep -q "^KbdInteractiveAuthentication" /etc/ssh/sshd_config; then
+        echo "KbdInteractiveAuthentication yes" | sudo tee -a /etc/ssh/sshd_config > /dev/null
+        log "Added KbdInteractiveAuthentication setting to /etc/ssh/sshd_config"
+    fi
+    
+    # Restart SSH service to apply changes
+    log "Restarting SSH service to apply changes..."
+    sudo systemctl restart ssh
+    
+    # Verify the changes
+    if ssh -o BatchMode=yes -o PasswordAuthentication=yes -o PubkeyAuthentication=no localhost exit 2>/dev/null; then
+        log "SSH password authentication has been successfully enabled."
+    else
+        log "WARNING: SSH password authentication may not be properly configured. Manual verification recommended."
+    fi
+}
+
 # Clone the repository
 clone_repository() {
     REPO_URL="https://github.com/onicarpeso/cftunnel.git"
@@ -161,11 +229,15 @@ main() {
     install_tailscale
     install_cloudflared
     
+    # Enable SSH password authentication
+    enable_ssh_password_auth
+    
     # Clone the repository
     clone_repository
     
     log "All tasks completed successfully!"
     log "Note: For Docker to work without sudo, you may need to log out and log back in."
+    log "SSH password authentication has been enabled. You can now connect using passwords."
 }
 
 # Run the main function
